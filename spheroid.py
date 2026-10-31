@@ -243,6 +243,7 @@ CELL_COLORS = ListedColormap(["white", "#d9534f", "#3a3a3a"])  # empty, alive, d
 
 if __name__ == "__main__":
     WATCH_DAYS = (2, 5, 8, 11, 14, 17)   # days to take pictures of
+    SHOW_WINDOWS = True                  # open the plots in windows at the end
     print("Growing the spheroid...")
     run = run_simulation(verbose=True, snapshot_hours=[d * 24 for d in WATCH_DAYS])
     history = run["history"]
@@ -321,3 +322,8 @@ if __name__ == "__main__":
           f"living rim {end['rim_thickness']:.0f} um, "
           f"growth rate {end['growth_rate']:.0f} um per day")
     print("Saved results.csv, tracked_variables.png, snapshot.png and over_time.png")
+
+    # Open a window for each figure. The program ends when you close them all.
+    if SHOW_WINDOWS:
+        print("Showing the plots. Close the windows to finish.")
+        plt.show()
