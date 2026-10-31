@@ -25,6 +25,8 @@ It takes about 10 seconds and saves these files in the folder you run it from:
 - `snapshot.png`: the tumor and its oxygen levels on the last day
 - `over_time.png`: pictures of the tumor on different days
 
+When it finishes, the three plots also open in their own windows. The program ends once you close them. If you only want the files, set `SHOW_WINDOWS = False` near the bottom of `spheroid.py`.
+
 The `example-results` folder has these files from a run I already did.
 
 ## How the model works
