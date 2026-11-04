@@ -31,8 +31,11 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 
 # ----------------------------------------------------------------------------
-# Parameters. Values marked [lit] are taken from (or close to) published papers;
-# see README.md for the sources. Values marked [guess] are model choices.
+# Parameters. Values marked [lit] are taken from (or close to) published papers.
+# Values marked [guess] are model choices.
+# Sources: oxygen diffusion and use are from Grimes et al. 2014, J. R. Soc.
+# Interface (use converted from ~0.02 mol/m^3/s). Sutherland 1988, Science, is
+# a review of spheroids, including the size where a dead core appears.
 # ----------------------------------------------------------------------------
 
 GRID_SIZE = 100             # grid is 100 x 100 squares (2 mm x 2 mm)
