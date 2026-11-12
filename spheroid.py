@@ -118,12 +118,15 @@ def measure(cells, hour):
 
 
 def run_simulation(target_cells=TARGET_CELLS, max_hours=MAX_HOURS, seed=1,
-                   snapshot_counts=(), verbose=False):
+                   snapshot_counts=(), verbose=False, live_every_hours=0):
     rng = np.random.default_rng(seed)
     cells = make_first_cell(rng)
     history, snapshots = [], {}
     waiting = sorted(snapshot_counts)
     steps_per_hour = round(1 / DT)
+    if live_every_hours:
+        plt.ion()
+        live_fig, live_ax = plt.subplots(figsize=(7, 7))
 
     step = 0
     while True:
@@ -134,6 +137,10 @@ def run_simulation(target_cells=TARGET_CELLS, max_hours=MAX_HOURS, seed=1,
             if verbose and step % (steps_per_hour * 24) == 0:
                 print(f"  hour {hour:5.0f}: {stats['cells']:5d} cells, "
                       f"spheroid radius {stats['radius']:5.0f} um")
+            if live_every_hours and step % (steps_per_hour * live_every_hours) == 0:
+                live_ax.clear()
+                draw_cells(live_ax, cells, f"Hour {hour:.0f}: {len(cells['x'])} cells")
+                plt.pause(0.001)
         while waiting and len(cells["x"]) >= waiting[0]:
             snapshots[waiting.pop(0)] = (hour, {k: v.copy() for k, v in cells.items()})
         if len(cells["x"]) >= target_cells or hour >= max_hours:
@@ -145,6 +152,10 @@ def run_simulation(target_cells=TARGET_CELLS, max_hours=MAX_HOURS, seed=1,
         step += 1
 
     history.append(measure(cells, step * DT))
+    if live_every_hours:
+        live_ax.clear()
+        draw_cells(live_ax, cells, f"Hour {step * DT:.0f}: {len(cells['x'])} cells")
+        plt.ioff()
     return {"history": history, "snapshots": snapshots, "final": cells}
 
 
@@ -164,8 +175,10 @@ def draw_cells(ax, cells, title):
 if __name__ == "__main__":
     WATCH_COUNTS = (2, 8, 50, 500, 2000, TARGET_CELLS)
     SHOW_WINDOWS = True
+    LIVE_EVERY_HOURS = 1
     print(f"Growing from 1 cell to {TARGET_CELLS} cells...")
-    run = run_simulation(snapshot_counts=WATCH_COUNTS, verbose=True)
+    run = run_simulation(snapshot_counts=WATCH_COUNTS, verbose=True,
+                         live_every_hours=LIVE_EVERY_HOURS)
     history = run["history"]
     end = history[-1]
 
