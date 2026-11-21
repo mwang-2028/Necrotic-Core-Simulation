@@ -9,11 +9,20 @@ R0 = 5.0
 R_MAX = np.sqrt(2) * R0
 K_GROW = (R_MAX - R0) / 18.0
 GROW_SPREAD = 0.25
+DAUGHTER_DISTANCE = 1.5
 
-K_COLLISION = 20000.0
+K_COLLISION = 1000.0
 FRICTION = 20.0
 FRICTION_POWER = 1
 MASS = 1.0
+
+BOX = 1200.0
+GRID_SPACING = 5.0
+GRID_N = int(round(BOX / GRID_SPACING)) + 1
+NUTRIENT_START = 1.0
+CONSUMPTION = 0.01
+STARVE_THRESHOLD = 1.0
+T_DEAD = 12.0
 
 DT = 0.02
 TARGET_CELLS = 5000
@@ -28,35 +37,44 @@ def make_first_cell(rng):
         "vy": np.zeros(1),
         "r": np.array([R0]),
         "k": K_GROW * (1 + GROW_SPREAD * rng.uniform(-1, 1, 1)),
+        "alive": np.array([True]),
+        "starve": np.zeros(1),
     }
+
+
+def make_nutrients():
+    return np.full((GRID_N, GRID_N), NUTRIENT_START)
 
 
 def grow(cells):
-    cells["r"] = np.minimum(cells["r"] + cells["k"] * DT, R_MAX)
+    alive = cells["alive"]
+    cells["r"][alive] = np.minimum(cells["r"][alive] + cells["k"][alive] * DT, R_MAX)
 
 
 def divide(cells, rng):
-    ready = np.nonzero(cells["r"] >= R_MAX)[0]
+    ready = np.nonzero(cells["alive"] & (cells["r"] >= R_MAX))[0]
     if len(ready) == 0:
-        return
+        return ready, ready
+    r_daughter = cells["r"][ready] / np.sqrt(2)
+    d = DAUGHTER_DISTANCE * r_daughter
     angle = rng.uniform(0, 2 * np.pi, len(ready))
-    offset = R_MAX - R0
-    dx, dy = offset * np.cos(angle), offset * np.sin(angle)
 
     new = {
-        "x": cells["x"][ready] - dx,
-        "y": cells["y"][ready] - dy,
+        "x": cells["x"][ready] + d * np.cos(angle),
+        "y": cells["y"][ready] + d * np.sin(angle),
         "vx": cells["vx"][ready].copy(),
         "vy": cells["vy"][ready].copy(),
-        "r": np.full(len(ready), R0),
+        "r": r_daughter,
         "k": K_GROW * (1 + GROW_SPREAD * rng.uniform(-1, 1, len(ready))),
+        "alive": np.ones(len(ready), dtype=bool),
+        "starve": cells["starve"][ready].copy(),
     }
-    cells["x"][ready] += dx
-    cells["y"][ready] += dy
-    cells["r"][ready] = R0
+    cells["r"][ready] = r_daughter
     cells["k"][ready] = K_GROW * (1 + GROW_SPREAD * rng.uniform(-1, 1, len(ready)))
+    first_new = len(cells["x"])
     for key in cells:
         cells[key] = np.concatenate([cells[key], new[key]])
+    return ready, np.arange(first_new, first_new + len(ready))
 
 
 def collision_forces(cells):
@@ -104,15 +122,52 @@ def move(cells):
     cells["y"] += cells["vy"] * DT
 
 
+def covered_points(cells, ids):
+    x, y, r = cells["x"][ids], cells["y"][ids], cells["r"][ids]
+    reach = int(np.ceil(R_MAX / GRID_SPACING + 0.5))
+    steps = np.arange(-reach, reach + 1)
+    ox, oy = np.meshgrid(steps, steps)
+    ox, oy = ox.ravel(), oy.ravel()
+
+    gi = np.rint((x + BOX / 2) / GRID_SPACING).astype(int)[:, None] + ox
+    gj = np.rint((y + BOX / 2) / GRID_SPACING).astype(int)[:, None] + oy
+    px = gi * GRID_SPACING - BOX / 2
+    py = gj * GRID_SPACING - BOX / 2
+    inside = (px - x[:, None])**2 + (py - y[:, None])**2 <= r[:, None]**2
+    inside &= (gi >= 0) & (gi < GRID_N) & (gj >= 0) & (gj < GRID_N)
+
+    owner, spot = np.nonzero(inside)
+    return owner, gi[owner, spot] * GRID_N + gj[owner, spot]
+
+
+def feed(cells, nutrients):
+    alive = np.nonzero(cells["alive"])[0]
+    if len(alive) == 0:
+        return
+    owner, point = covered_points(cells, alive)
+    u = nutrients.reshape(-1)
+    eaters = np.bincount(point, minlength=u.size)
+    u -= CONSUMPTION * DT * eaters
+    np.maximum(u, 0, out=u)
+
+    food = np.bincount(owner, weights=u[point], minlength=len(alive))
+    starve = np.where(food < STARVE_THRESHOLD, cells["starve"][alive] + DT, 0.0)
+    cells["starve"][alive] = starve
+    cells["alive"][alive[starve >= T_DEAD]] = False
+
+
 def measure(cells, hour):
-    x, y, r = cells["x"], cells["y"], cells["r"]
+    x, y, r, alive = cells["x"], cells["y"], cells["r"], cells["alive"]
     cx, cy = x.mean(), y.mean()
     distance = np.sqrt((x - cx)**2 + (y - cy)**2)
+    dead = ~alive
     return {
         "hour": hour,
         "cells": len(x),
+        "alive": int(alive.sum()),
+        "dead": int(dead.sum()),
         "radius": float((distance + r).max()),
-        "average_cell_radius": float(r.mean()),
+        "necrotic_radius": float(np.percentile(distance[dead], 95) + R0) if dead.any() else 0.0,
         "average_speed": float(np.sqrt(cells["vx"]**2 + cells["vy"]**2).mean()),
     }
 
@@ -121,6 +176,7 @@ def run_simulation(target_cells=TARGET_CELLS, max_hours=MAX_HOURS, seed=1,
                    snapshot_counts=(), verbose=False):
     rng = np.random.default_rng(seed)
     cells = make_first_cell(rng)
+    nutrients = make_nutrients()
     history, snapshots = [], {}
     waiting = sorted(snapshot_counts)
     steps_per_hour = round(1 / DT)
@@ -132,29 +188,38 @@ def run_simulation(target_cells=TARGET_CELLS, max_hours=MAX_HOURS, seed=1,
             stats = measure(cells, hour)
             history.append(stats)
             if verbose and step % (steps_per_hour * 24) == 0:
-                print(f"  hour {hour:5.0f}: {stats['cells']:5d} cells, "
-                      f"spheroid radius {stats['radius']:5.0f} um")
+                print(f"  hour {hour:5.0f}: {stats['cells']:5d} cells "
+                      f"({stats['dead']} dead), spheroid radius {stats['radius']:5.0f} um")
         while waiting and len(cells["x"]) >= waiting[0]:
-            snapshots[waiting.pop(0)] = (hour, {k: v.copy() for k, v in cells.items()})
-        if len(cells["x"]) >= target_cells or hour >= max_hours:
+            snapshots[waiting.pop(0)] = (hour, {k: v.copy() for k, v in cells.items()},
+                                         nutrients.copy())
+        too_big = history[-1]["radius"] > 0.45 * BOX
+        if len(cells["x"]) >= target_cells or hour >= max_hours or too_big:
             break
 
         grow(cells)
         divide(cells, rng)
         move(cells)
+        feed(cells, nutrients)
         step += 1
 
     history.append(measure(cells, step * DT))
-    return {"history": history, "snapshots": snapshots, "final": cells}
+    return {"history": history, "snapshots": snapshots, "final": cells, "nutrients": nutrients}
 
 
-def draw_cells(ax, cells, title):
-    x, y, r = cells["x"], cells["y"], cells["r"]
+def draw_cells(ax, cells, title, nutrients=None):
+    x, y, r, alive = cells["x"], cells["y"], cells["r"], cells["alive"]
+    reach = max(np.abs(x).max(), np.abs(y).max()) + R_MAX * 2
+    if nutrients is not None:
+        edge = BOX / 2 + GRID_SPACING / 2
+        ax.imshow(nutrients.T, origin="lower", extent=(-edge, edge, -edge, edge),
+                  cmap="Greens", vmin=0, vmax=NUTRIENT_START, alpha=0.6)
+    colors = np.where(alive, "#e8a0a0", "#555555")
+    edges = np.where(alive, "#a83232", "#222222")
     circles = EllipseCollection(2 * r, 2 * r, np.zeros_like(r), units="xy",
                                 offsets=np.column_stack([x, y]), offset_transform=ax.transData,
-                                facecolors="#e8a0a0", edgecolors="#a83232", linewidths=0.4)
+                                facecolors=colors, edgecolors=edges, linewidths=0.4)
     ax.add_collection(circles)
-    reach = max(np.abs(x).max(), np.abs(y).max()) + R_MAX * 2
     ax.set_xlim(-reach, reach)
     ax.set_ylim(-reach, reach)
     ax.set_aspect("equal")
@@ -169,7 +234,7 @@ if __name__ == "__main__":
     history = run["history"]
     end = history[-1]
 
-    columns = ["hour", "cells", "radius", "average_cell_radius", "average_speed"]
+    columns = ["hour", "cells", "alive", "dead", "radius", "necrotic_radius", "average_speed"]
     with open("results.csv", "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(columns)
@@ -179,12 +244,20 @@ if __name__ == "__main__":
 
     hours = [h["hour"] for h in history]
     fig, axes = plt.subplots(1, 3, figsize=(14, 4))
-    axes[0].plot(hours, [h["cells"] for h in history], color="#a83232")
+    axes[0].plot(hours, [h["cells"] for h in history], color="#333333", label="all")
+    axes[0].plot(hours, [h["alive"] for h in history], color="#a83232", label="living")
+    axes[0].plot(hours, [max(h["dead"], 0.5) for h in history], color="#777777",
+                 linestyle="--", label="dead")
     axes[0].set_yscale("log")
+    axes[0].set_ylim(bottom=1)
     axes[0].set_title("Number of cells")
-    axes[1].plot(hours, [h["radius"] for h in history], color="#2a5aa8")
-    axes[1].set_title("Spheroid radius")
+    axes[0].legend()
+    axes[1].plot(hours, [h["radius"] for h in history], color="#2a5aa8", label="spheroid")
+    axes[1].plot(hours, [h["necrotic_radius"] for h in history], color="#555555",
+                 label="necrotic core")
+    axes[1].set_title("Radius")
     axes[1].set_ylabel("um")
+    axes[1].legend()
     axes[2].plot(hours, [h["average_speed"] for h in history], color="#2a7a3a")
     axes[2].set_title("Average cell speed")
     axes[2].set_ylabel("um per hour")
@@ -195,7 +268,8 @@ if __name__ == "__main__":
     fig.savefig("tracked_variables.png", dpi=120)
 
     fig, ax = plt.subplots(figsize=(7, 7))
-    draw_cells(ax, run["final"], f"Hour {end['hour']:.0f}: {end['cells']} cells")
+    draw_cells(ax, run["final"], f"Hour {end['hour']:.0f}: {end['alive']} living, "
+               f"{end['dead']} dead", run["nutrients"])
     ax.set_xlabel("um")
     fig.tight_layout()
     fig.savefig("snapshot.png", dpi=150)
@@ -203,14 +277,16 @@ if __name__ == "__main__":
     counts = [c for c in WATCH_COUNTS if c in run["snapshots"]]
     fig, axes = plt.subplots(1, len(counts), figsize=(3.2 * len(counts), 3.6))
     for ax, count in zip(axes, counts):
-        hour, cells = run["snapshots"][count]
-        draw_cells(ax, cells, f"{len(cells['x'])} cells, hour {hour:.0f}")
+        hour, cells, nutrients = run["snapshots"][count]
+        draw_cells(ax, cells, f"{len(cells['x'])} cells, hour {hour:.0f}", nutrients)
         ax.set_xticks([])
         ax.set_yticks([])
     fig.tight_layout()
     fig.savefig("over_time.png", dpi=120)
 
-    print(f"Hour {end['hour']:.0f}: {end['cells']} cells, spheroid radius {end['radius']:.0f} um")
+    print(f"Hour {end['hour']:.0f}: {end['cells']} cells ({end['alive']} living, "
+          f"{end['dead']} dead), spheroid radius {end['radius']:.0f} um, "
+          f"necrotic core radius {end['necrotic_radius']:.0f} um")
     print("Saved results.csv, tracked_variables.png, snapshot.png and over_time.png")
 
     if SHOW_WINDOWS:
