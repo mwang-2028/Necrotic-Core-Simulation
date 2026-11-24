@@ -3,3 +3,4 @@ __pycache__/
 # plots and results made by running the simulation
 /*.png
 /results.csv
+/*.gif
